@@ -40,7 +40,17 @@ def retrieve(query):
 
     return chunks
 
-def generate_answer(query, chunks):
+def generate_answer(query: str, chunks: list, history: list = []) -> str:
+    
+    # Format history for the prompt
+    history_text = ""
+    if history:
+        for turn in history:
+            role = "Employee" if turn["role"] == "user" else "Copilot"
+            history_text += f"{role}: {turn['content']}\n"
+    else:
+        history_text = "No previous conversation."
+
     context = ""
     for i, chunk in enumerate(chunks, 1):
         context += f"\nSource {i} ({chunk['source']}, relevance: {chunk['score']}):\n"
@@ -49,12 +59,20 @@ def generate_answer(query, chunks):
     prompt = f"""You are a helpful IT Support Copilot for a tech company.
 Answer the employee's question using ONLY the context provided below.
 Be conversational and empathetic. Explain WHY each step helps, don't just list them.
-If the answer is not in the context, say: "I don't have information about that. Please contact it-support@company.com"
 
-CONTEXT:
-{context}   
+CONVERSATION HISTORY:
+{history_text}
 
-EMPLOYEE QUESTION: {query}
+KNOWLEDGE BASE CONTEXT:
+{context}
+
+INSTRUCTIONS:
+- Take conversation history into account when answering
+- Don't repeat suggestions already made in the conversation history
+- If the employee said they already tried something, acknowledge it and move on
+- If the answer is not in the context say: "I don't have information about that. Please contact it-support@company.com"
+
+EMPLOYEE LATEST QUESTION: {query}
 
 ANSWER:"""
 
