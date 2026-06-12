@@ -75,20 +75,20 @@ EMPLOYEE LATEST QUESTION: {query}"""
     return {"needs_ticket": False, "needs_slack": False, "reasoning": "Could not parse decision"}
 
 
-async def orchestrate(query: str, employee_name: str = "Employee") -> str:
+async def orchestrate(query: str, employee_name: str = "Employee", history: list = []) -> str:
     print(f"\n{'='*55}")
     print(f"  Query: {query}")
     print(f"{'='*55}")
 
-    # Step 1: RAG - retrieve and generate grounded answer
+    # Step 1: RAG - pass history for context aware retrieval
     print("\n[1/3] Running RAG pipeline...")
     chunks = retrieve(query)
-    rag_answer = generate_answer(query, chunks)
+    rag_answer = generate_answer(query, chunks, history)  # ← history passed here
     print(f"  ✓ RAG answer generated from {len(chunks)} chunks")
 
-    # Step 2: Reasoning - decide what actions to take
+    # Step 2: Reasoning - pass history for context aware decisions
     print("\n[2/3] Reasoning about actions...")
-    decision = await decide_actions(query, rag_answer)
+    decision = await decide_actions(query, rag_answer, history)  # ← history passed here
     print(f"  ✓ Decision: {decision['reasoning']}")
 
     # Step 3: Act - call MCP tools based on decision
@@ -127,25 +127,36 @@ async def orchestrate(query: str, employee_name: str = "Employee") -> str:
 
     return final_response
 
-
 if __name__ == "__main__":
     print("=== IT Support Copilot - Orchestrator ===")
     print("Type 'quit' to exit\n")
 
-    while True:
-        employee = input("Your name: ").strip()
-        if not employee:
-            employee = "Anonymous"
+    employee = input("Your name: ").strip()
+    if not employee:
+        employee = "Anonymous"
 
-        question = input("Your IT question: ").strip()
+    print(f"\nHello {employee}! How can I help you today?")
+    print("(Type 'reset' to start a new conversation)\n")
+
+    while True:
+        question = input("You: ").strip()
 
         if question.lower() in ("quit", "exit"):
             print("Goodbye!")
             break
 
+        if question.lower() == "reset":
+            conversation_history.clear()
+            print("Conversation reset! Starting fresh.\n")
+            continue
+
         if not question:
             continue
 
-        answer = asyncio.run(orchestrate(question, employee))
-        print(f"\n🤖 IT Copilot:\n{answer}")
-        print()
+        answer = asyncio.run(orchestrate(question, employee, conversation_history))
+
+        # Append this turn to history AFTER getting the answer
+        conversation_history.append({"role": "user", "content": question})
+        conversation_history.append({"role": "assistant", "content": answer})
+
+        print(f"\n🤖 IT Copilot:\n{answer}\n")
