@@ -1,0 +1,42 @@
+VPN TROUBLESHOOTING
+===================
+
+Issue: VPN keeps disconnecting
+--------------------------------
+Symptoms: VPN drops every 10-30 minutes, especially on Wi-Fi.
+
+Steps to fix:
+1. Go to Network Settings → VPN → Advanced
+2. Set MTU size to 1300
+3. Disable power saving on your network adapter
+4. Switch to 5GHz Wi-Fi or use a wired connection
+5. Reinstall VPN client from it-portal.company.com if issue persists
+
+---
+
+Issue: Cannot connect to VPN at all
+-------------------------------------
+1. Check your internet works without VPN first
+2. Use your company email as username (not personal)
+3. Enter the 6-digit MFA code within 30 seconds
+4. After 5 failed attempts, contact it-support@company.com
+5. Try from a mobile hotspot to rule out firewall issues
+
+---
+
+PASSWORD & ACCOUNT ISSUES
+==========================
+
+Issue: Forgot or expired password
+-----------------------------------
+- Passwords expire every 90 days
+- Self-service reset: accounts.company.com/reset
+- Verify via mobile OTP
+- New password rules: min 12 chars, 1 uppercase, 1 number, 1 special character
+
+Issue: Account locked out
+--------------------------
+- Locks after 5 failed login attempts
+- Wait 15 minutes for auto-unlock OR
+- Contact IT: it-support@company.com or Slack #it-help
+- Urgent unlock: call ext. 4357

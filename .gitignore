@@ -1,6 +1,7 @@
 .env
 db/
-data/
+tickets.json
 __pycache__/
 *.pyc
 .DS_Store
+it-agent/

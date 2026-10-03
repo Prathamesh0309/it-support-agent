@@ -1,0 +1,52 @@
+SOFTWARE ACCESS REQUESTS
+=========================
+
+How to request access to a new tool
+-------------------------------------
+1. Go to it-portal.company.com → Access Requests
+2. Search for the software (Jira, Confluence, Figma, Salesforce)
+3. Select your team and give a one line business reason
+4. Manager gets an approval email — takes 1 business day
+5. You get setup instructions via email once approved
+
+Approval times by tool:
+- Jira / Confluence: Auto-approved for Engineering, 1 day for others
+- GitHub: Auto-approved for Engineering
+- Salesforce: Manager + department head approval (3-5 days)
+- Figma: Auto-approved for Design, 1 day for others
+- AWS Console: Security team approval required (5-7 days)
+
+---
+
+LAPTOP & HARDWARE ISSUES
+=========================
+
+Issue: Laptop is slow or freezing
+-----------------------------------
+1. Do a full restart (not just sleep)
+2. Ensure at least 10GB free disk space
+3. Open Task Manager (Windows) or Activity Monitor (Mac)
+4. Look for processes using more than 80% CPU
+5. Common culprits: Chrome with many tabs, Zoom, Docker
+6. Run IT diagnostic tool from it-portal.company.com/tools
+
+Issue: External monitor not detected
+--------------------------------------
+1. Check cable is firmly connected on both ends
+2. Try a different cable or port
+3. Mac: System Preferences → Displays → Detect Displays
+4. Windows: Right-click desktop → Display Settings → Detect
+5. Reboot while monitor is connected
+
+---
+
+SLACK & ZOOM
+=============
+
+Slack channel access:
+- Public channels: search and join directly
+- Private channels: ask an existing member to add you
+
+Zoom audio not working:
+- Settings → Audio → select correct microphone
+- Ensure Zoom app is up to date: Help → Check for Updates

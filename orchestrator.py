@@ -1,162 +1,185 @@
 import asyncio
-from dotenv import load_dotenv
-import os
 import json
-import re
-from google import genai
+import os
+import sys
+
+from google.genai import types
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from phase1_rag import retrieve, generate_answer
 
-load_dotenv()
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+from config import GENERATION_MODEL, generate
+from phase1_rag import format_history, generate_answer, is_relevant, retrieve
 
-# Conversation memory - stores the full dialogue history
-conversation_history = []
+SERVER_PARAMS = StdioServerParameters(command=sys.executable, args=[os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_server.py")])
 
-SERVER_PARAMS = StdioServerParameters(
-    command="python",
-    args=["mcp_server.py"]
+# Constrained decoding: the model can only return JSON matching this schema, so
+# there is no regex-scraping of free text and no malformed-JSON crash.
+DECISION_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "needs_ticket": types.Schema(type=types.Type.BOOLEAN),
+        "ticket_priority": types.Schema(type=types.Type.STRING, enum=["low", "medium", "high"]),
+        "needs_slack": types.Schema(type=types.Type.BOOLEAN),
+        "slack_urgency": types.Schema(type=types.Type.STRING, enum=["normal", "urgent"]),
+        "ticket_id_to_check": types.Schema(
+            type=types.Type.STRING,
+            nullable=True,
+            description="Ticket ID (e.g. TKT-A3X9F1) if the employee asks about an existing ticket, else null",
+        ),
+        "reasoning": types.Schema(type=types.Type.STRING),
+    },
+    required=["needs_ticket", "needs_slack", "reasoning"],
 )
 
-async def call_mcp_tool(tool_name: str, tool_args: dict) -> str:
-    async with stdio_client(SERVER_PARAMS) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(tool_name, tool_args)
-            return result.content[0].text
-        
+SAFE_DEFAULT = {
+    "needs_ticket": False,
+    "needs_slack": False,
+    "ticket_id_to_check": None,
+    "reasoning": "Could not parse decision; taking no action.",
+}
 
-async def decide_actions(query: str, rag_answer: str, history: list) -> dict:
-    
-    # Format history into readable text for the prompt
-    history_text = ""
-    if history:
-        for turn in history:
-            role = "Employee" if turn["role"] == "user" else "Copilot"
-            history_text += f"{role}: {turn['content']}\n"
-    else:
-        history_text = "No previous conversation."
 
+def decide_actions(query, rag_answer, history):
+    """Ask the LLM which tools (if any) to call. Returns a dict."""
     prompt = f"""You are an IT Support Orchestrator Agent.
 
 CONVERSATION HISTORY:
-{history_text}
+{format_history(history)}
 
 You have already retrieved this answer from the knowledge base:
 RAG ANSWER: {rag_answer}
 
-Based on the conversation history and the employee's latest question, decide if any actions need to be taken.
-You have access to these tools:
-1. create_ticket - Use when the issue needs to be tracked or couldn't be fully resolved
-2. notify_slack - Use when the issue is urgent or needs immediate IT attention
-3. check_ticket_status - Use when employee is asking about an existing ticket
+Based on the conversation history and the employee's latest question, decide which actions to take.
+Tools:
+1. create_ticket - the issue needs tracking or the answer didn't fully resolve it
+2. notify_slack - the issue is urgent or needs immediate IT attention
+3. check_ticket_status - the employee asks about an existing ticket (set ticket_id_to_check)
 
-Respond in this EXACT format and nothing else:
-{{
-    "needs_ticket": true or false,
-    "ticket_priority": "low" or "medium" or "high",
-    "needs_slack": true or false,
-    "slack_urgency": "normal" or "urgent",
-    "reasoning": "one sentence explaining your decision"
-}}
+Do not create a ticket for a simple question the answer fully resolves.
 
 EMPLOYEE LATEST QUESTION: {query}"""
 
-    response = gemini_client.models.generate_content(
-        model="gemini-3.1-flash-lite",
-        contents=prompt
-    )
+    try:
+        response = generate(
+            GENERATION_MODEL,
+            prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=DECISION_SCHEMA,
+                temperature=0,  # routing should be deterministic
+            ),
+        )
+        return {**SAFE_DEFAULT, **json.loads(response.text)}
+    except Exception as e:  # network error, blocked response, bad JSON...
+        print(f"  ! decision step failed: {e}", file=sys.stderr)
+        return dict(SAFE_DEFAULT)
 
-    raw = response.text
-    match = re.search(r'\{.*\}', raw, re.DOTALL)
-    if match:
-        return json.loads(match.group())
-    return {"needs_ticket": False, "needs_slack": False, "reasoning": "Could not parse decision"}
+
+async def call_tool(session, name, args):
+    result = await session.call_tool(name, args)
+    return result.content[0].text
 
 
-async def orchestrate(query: str, employee_name: str = "Employee", history: list = []) -> str:
-    print(f"\n{'='*55}")
-    print(f"  Query: {query}")
-    print(f"{'='*55}")
+async def orchestrate(session, query, employee_name, history):
+    print(f"\n{'='*55}\n  Query: {query}\n{'='*55}")
 
-    # Step 1: RAG - pass history for context aware retrieval
+    # Step 1: RAG (retrieval sees history via query rewriting)
     print("\n[1/3] Running RAG pipeline...")
-    chunks = retrieve(query)
-    rag_answer = generate_answer(query, chunks, history)  # ← history passed here
+    chunks = await asyncio.to_thread(retrieve, query, history)
+    rag_answer = await asyncio.to_thread(generate_answer, query, chunks, history)
     print(f"  ✓ RAG answer generated from {len(chunks)} chunks")
 
-    # Step 2: Reasoning - pass history for context aware decisions
+    # Step 2: Reasoning
     print("\n[2/3] Reasoning about actions...")
-    decision = await decide_actions(query, rag_answer, history)  # ← history passed here
+    decision = await asyncio.to_thread(decide_actions, query, rag_answer, history)
+
+    # Deterministic rule on top of the LLM: if the knowledge base had nothing
+    # relevant, a human has to pick this up, so always open a ticket.
+    if not is_relevant(chunks) and not decision.get("ticket_id_to_check"):
+        decision["needs_ticket"] = True
+        decision.setdefault("ticket_priority", "medium")
+        decision["reasoning"] += " (Escalated: no relevant knowledge-base content.)"
     print(f"  ✓ Decision: {decision['reasoning']}")
 
-    # Step 3: Act - call MCP tools based on decision
+    # Step 3: Act
     print("\n[3/3] Taking actions...")
     actions_taken = []
 
+    if decision.get("ticket_id_to_check"):
+        print("  → Checking ticket status...")
+        result = await call_tool(session, "check_ticket_status",
+                                 {"ticket_id": decision["ticket_id_to_check"]})
+        actions_taken.append(f"Ticket status: {result}")
+
     if decision.get("needs_ticket"):
         print("  → Creating ticket...")
-        ticket_result = await call_mcp_tool("create_ticket", {
+        result = await call_tool(session, "create_ticket", {
             "employee_name": employee_name,
             "issue_summary": query,
-            "priority": decision.get("ticket_priority", "medium")
+            "priority": decision.get("ticket_priority", "medium"),
         })
-        actions_taken.append(f"Ticket created: {ticket_result}")
-        print(f"  ✓ Ticket created")
+        actions_taken.append(f"Ticket created: {result}")
 
     if decision.get("needs_slack"):
         print("  → Notifying Slack...")
-        slack_result = await call_mcp_tool("notify_slack", {
+        result = await call_tool(session, "notify_slack", {
             "channel": "it-help",
             "message": f"Employee {employee_name} needs help: {query}",
-            "urgency": decision.get("slack_urgency", "normal")
+            "urgency": decision.get("slack_urgency", "normal"),
         })
-        actions_taken.append(f"Slack notified: {slack_result}")
-        print(f"  ✓ Slack notified")
+        actions_taken.append(f"Slack notified: {result}")
 
     if not actions_taken:
         print("  ✓ No actions needed - RAG answer is sufficient")
 
-    # Step 4: Compile final response
     final_response = rag_answer
     if actions_taken:
         final_response += "\n\n--- Actions Taken ---"
         for action in actions_taken:
             final_response += f"\n• {action}"
-
     return final_response
 
-if __name__ == "__main__":
+
+async def main():
     print("=== IT Support Copilot - Orchestrator ===")
     print("Type 'quit' to exit\n")
 
-    employee = input("Your name: ").strip()
-    if not employee:
-        employee = "Anonymous"
-
+    employee = (await asyncio.to_thread(input, "Your name: ")).strip() or "Anonymous"
     print(f"\nHello {employee}! How can I help you today?")
     print("(Type 'reset' to start a new conversation)\n")
 
-    while True:
-        question = input("You: ").strip()
+    history = []
 
-        if question.lower() in ("quit", "exit"):
-            print("Goodbye!")
-            break
+    # One MCP server process and session for the whole conversation, rather
+    # than spawning a new subprocess for every tool call.
+    async with stdio_client(SERVER_PARAMS) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
 
-        if question.lower() == "reset":
-            conversation_history.clear()
-            print("Conversation reset! Starting fresh.\n")
-            continue
+            while True:
+                question = (await asyncio.to_thread(input, "You: ")).strip()
 
-        if not question:
-            continue
+                if question.lower() in ("quit", "exit"):
+                    print("Goodbye!")
+                    break
+                if question.lower() == "reset":
+                    history.clear()
+                    print("Conversation reset! Starting fresh.\n")
+                    continue
+                if not question:
+                    continue
 
-        answer = asyncio.run(orchestrate(question, employee, conversation_history))
+                try:
+                    answer = await orchestrate(session, question, employee, history)
+                except Exception as e:
+                    print(f"\nSomething went wrong: {e}\n")
+                    continue
 
-        # Append this turn to history AFTER getting the answer
-        conversation_history.append({"role": "user", "content": question})
-        conversation_history.append({"role": "assistant", "content": answer})
+                # Append AFTER answering so the current turn isn't in its own history.
+                history.append({"role": "user", "content": question})
+                history.append({"role": "assistant", "content": answer})
+                print(f"\n🤖 IT Copilot:\n{answer}\n")
 
-        print(f"\n🤖 IT Copilot:\n{answer}\n")
+
+if __name__ == "__main__":
+    asyncio.run(main())
